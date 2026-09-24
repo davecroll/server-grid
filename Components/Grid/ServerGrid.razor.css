@@ -67,7 +67,7 @@
 .sg-chip button:hover { background: rgba(0,0,0,.08); }
 
 /* ---- viewport & table ------------------------------------------------------ */
-.sg-viewport { overflow: auto; position: relative; outline: none; background: #fff; }
+.sg-viewport { overflow: auto; position: relative; outline: none; background: #fff; contain: layout paint; overscroll-behavior: contain; }
 .sg-viewport:focus-visible { box-shadow: inset 0 0 0 2px rgba(16,124,65,.35); }
 .sg-table { border-collapse: separate; border-spacing: 0; table-layout: fixed; min-width: 100%; }
 
@@ -146,5 +146,15 @@
 /* ---- overlays -------------------------------------------------------------- */
 .sg-backdrop { position: fixed; inset: 0; z-index: 50; background: transparent; }
 
+/* Un-fetched regions look like skeleton rows (row rules + a faint text bar) rather than a white void. */
 .sg-spacer { padding: 0; border: 0; }
-.sg-spacer td { padding: 0; border: 0; }
+.sg-spacer-cell {
+    padding: 0; border: 0; height: inherit;
+    background-color: #fff;
+    background-image:
+        linear-gradient(to bottom, transparent calc(50% - 5px), #ededed calc(50% - 5px), #ededed calc(50% + 5px), transparent calc(50% + 5px)),
+        linear-gradient(to bottom, transparent calc(100% - 1px), #ececec calc(100% - 1px));
+    background-size: 38% var(--sg-row-height), 100% var(--sg-row-height);
+    background-position: 8px 0, 0 0;
+    background-repeat: repeat-y, repeat;
+}

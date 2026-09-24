@@ -79,7 +79,7 @@
                 </div>
             }
 
-            <div class="sg-viewport" style="height:@Height" tabindex="0" @ref="_viewportElement" @onkeydown="OnKeyDown">
+            <div class="sg-viewport" style="height:@Height" tabindex="0" @ref="_viewportElement" data-scroll-sync="@_scrollSync" @onkeydown="OnKeyDown">
                 <table class="sg-table" style="width:@Px(TableWidth)">
                     <colgroup>
                         @foreach (var col in VisibleColumns)
@@ -169,7 +169,7 @@
                         }
                         else
                         {
-                            <tr class="sg-spacer" aria-hidden="true" style="height:@Px(_topSpacer)"></tr>
+                            <tr class="sg-spacer" aria-hidden="true" style="height:@Px(_topSpacer)"><td class="sg-spacer-cell" colspan="@VisibleColumnCount"></td></tr>
                             @foreach (var row in _rows)
                             {
                                 <tr @key="RowKeyFor(row)" class="sg-row @(row.Index == _selectedRow ? "sg-row-selected" : "") @(row.Index % 2 == 1 ? "sg-row-alt" : "")">
@@ -189,7 +189,7 @@
                                     }
                                 </tr>
                             }
-                            <tr class="sg-spacer" aria-hidden="true" style="height:@Px(_bottomSpacer)"></tr>
+                            <tr class="sg-spacer" aria-hidden="true" style="height:@Px(_bottomSpacer)"><td class="sg-spacer-cell" colspan="@VisibleColumnCount"></td></tr>
                         }
                     </tbody>
                 </table>
@@ -205,7 +205,12 @@
                         <span>Row @((_selectedRow + 1).ToString("N0", CultureInfo.CurrentCulture))@(_selectedColumn is not null ? $", {Columns.FirstOrDefault(c => c.EffectiveKey == _selectedColumn)?.EffectiveTitle}" : "")</span>
                     }
                     <span class="sg-spacer"></span>
-                    <span class="sg-status-muted">Server-side · last fetch @_lastLoadMs ms</span>
+                    @if (ShowDiagnostics)
+                    {
+                        <span class="sg-status-muted sg-diagnostics">@DiagnosticsText</span>
+                        <span class="sg-status-sep">·</span>
+                    }
+                    <span class="sg-status-muted">Server-side · @_fetchCount @(_fetchCount == 1 ? "fetch" : "fetches") · last @_lastLoadMs ms</span>
                 </div>
             }
 

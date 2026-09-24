@@ -30,11 +30,21 @@ public partial class ServerGrid<TItem> : ComponentBase, IAsyncDisposable
     [Parameter] public bool ShowStatusBar { get; set; } = true;
     [Parameter] public bool AllowColumnResize { get; set; } = true;
 
+    /// <summary>Shows scroller internals (anchor row, rendered window, fetch count) in the status bar.</summary>
+    [Parameter] public bool ShowDiagnostics { get; set; }
+
     /// <summary>Maximum number of distinct values shown in a filter drop-down before the list is truncated (use search to narrow).</summary>
     [Parameter] public int MaxFilterValues { get; set; } = 250;
 
-    /// <summary>Rows rendered above/below the visible area so small scrolls never show gaps.</summary>
-    [Parameter] public int OverscanCount { get; set; } = 10;
+    /// <summary>Rows rendered beyond the visible area in the direction of travel. Together with <see cref="FetchMargin"/> this is the
+    /// "runway" the browser can scroll through natively before the server is asked for a new window.</summary>
+    [Parameter] public int OverscanCount { get; set; } = 40;
+
+    /// <summary>Rows kept rendered behind the visible area (opposite to the direction of travel).</summary>
+    [Parameter] public int OverscanBehind { get; set; } = 15;
+
+    /// <summary>A new window is fetched when the visible rows come within this many rows of the rendered window's edge.</summary>
+    [Parameter] public int FetchMargin { get; set; } = 10;
 
     /// <summary>
     /// Browsers cap element heights (Chrome ≈16.7M px, Firefox ≈17.9M px). When rows × RowHeight exceeds this the
@@ -76,7 +86,11 @@ public partial class ServerGrid<TItem> : ComponentBase, IAsyncDisposable
     private int _windowStart;
     private double _topSpacer;
     private double _bottomSpacer;
-    private string? _windowKey;
+    private string? _windowStateKey;
+    private int _scrollDirection;      // +1 down, -1 up, 0 unknown
+    private string? _scrollSync;       // "top:seq" — applied by the JS shim in the same frame as the render that carries it
+    private int _scrollSyncSeq;
+    private int _fetchCount;
     private bool _loading;
     private bool _reloadQueued;
     private bool _forceReload;
@@ -144,6 +158,12 @@ public partial class ServerGrid<TItem> : ComponentBase, IAsyncDisposable
     }
 
     // ---- virtual scrolling ----------------------------------------------------------------------
+    //
+    // The browser owns scrolling. The server renders a window of rows (visible + overscan) and only replaces it
+    // when the visible area gets within FetchMargin rows of the window's edge, so ordinary wheel scrolling is
+    // handled natively with no round trip at all. Above the browser height cap (IsScaled) the scrollbar is
+    // proportional; the row at the top of the viewport (the "anchor") is tracked from wheel deltas and the
+    // scrollbar is re-synced to it only when a window is replaced.
 
     private double TotalHeight => Math.Max(0, _totalCount) * (double)RowHeight;
     private double VirtualHeight => Math.Min(TotalHeight, MaxScrollHeight);
@@ -155,6 +175,7 @@ public partial class ServerGrid<TItem> : ComponentBase, IAsyncDisposable
     private Task OnViewportChangedAsync(double scrollTop, double clientHeight, double delta, bool relative)
     {
         var heightChanged = Math.Abs(clientHeight - _clientHeight) > 0.5;
+        var previousAnchor = _anchorIndex;
         _scrollTop = scrollTop;
         _clientHeight = clientHeight;
         _viewportKnown = true;
@@ -182,6 +203,9 @@ public partial class ServerGrid<TItem> : ComponentBase, IAsyncDisposable
                 _anchorOffset = 0;
             }
         }
+
+        if (_anchorIndex != previousAnchor) _scrollDirection = _anchorIndex > previousAnchor ? 1 : -1;
+        else if (delta != 0) _scrollDirection = delta > 0 ? 1 : -1;
 
         return RequestWindowAsync(force: false);
     }
@@ -213,27 +237,39 @@ public partial class ServerGrid<TItem> : ComponentBase, IAsyncDisposable
         }
     }
 
+    /// <summary>True when the visible rows are outside, or about to leave, the rendered window.</summary>
+    private bool NeedsNewWindow()
+    {
+        if (_rows.Length == 0) return _totalCount != 0;
+        var windowEnd = _windowStart + _rows.Length - 1;
+        var visibleEnd = _anchorIndex + VisibleRowCount - 1;
+        if (_anchorIndex < _windowStart || visibleEnd > windowEnd) return true;
+        if (_windowStart > 0 && _anchorIndex - _windowStart < FetchMargin) return true;
+        if (windowEnd < _totalCount - 1 && windowEnd - visibleEnd < FetchMargin) return true;
+        return false;
+    }
+
     private async Task LoadWindowAsync(bool force)
     {
         if (!_viewportKnown) return;
 
         var request = BuildRequest();
-        var count = VisibleRowCount + 2 * OverscanCount;
-        var start = Math.Max(0, _anchorIndex - OverscanCount);
-        var key = $"{request.CacheKey}|{start}|{count}";
+        var stateChanged = request.CacheKey != _windowStateKey;
+        if (!force && !stateChanged && !NeedsNewWindow())
+            return; // still inside the rendered runway: the browser scrolls natively, nothing to do
 
-        if (!force && key == _windowKey)
-        {
-            PositionWindow();
-            StateHasChanged();
-            return;
-        }
+        // Bias the window towards the direction of travel.
+        var above = _scrollDirection < 0 ? OverscanCount : OverscanBehind;
+        var below = _scrollDirection < 0 ? OverscanBehind : OverscanCount;
+        var start = Math.Max(0, _anchorIndex - above);
+        var count = above + VisibleRowCount + below;
 
         _loadCts?.Cancel();
         _loadCts?.Dispose();
         var cts = _loadCts = new CancellationTokenSource();
         var watch = System.Diagnostics.Stopwatch.StartNew();
         _pendingLoads++;
+        _fetchCount++;
         try
         {
             var result = await DataSource.GetRowsAsync(request, start, count, cts.Token);
@@ -249,7 +285,7 @@ public partial class ServerGrid<TItem> : ComponentBase, IAsyncDisposable
                 // The view shrank (e.g. a filter was applied) and the anchor fell off the end; pull it back and refetch.
                 _anchorIndex = MaxAnchor;
                 _anchorOffset = 0;
-                _windowKey = null;
+                _windowStateKey = null;
                 _reloadQueued = true;
                 return;
             }
@@ -258,7 +294,7 @@ public partial class ServerGrid<TItem> : ComponentBase, IAsyncDisposable
             for (var i = 0; i < rows.Length; i++) rows[i] = new GridRow<TItem>(start + i, result.Items[i]);
             _rows = rows;
             _windowStart = start;
-            _windowKey = key;
+            _windowStateKey = request.CacheKey;
             PositionWindow();
         }
         catch (OperationCanceledException) { }
@@ -267,7 +303,7 @@ public partial class ServerGrid<TItem> : ComponentBase, IAsyncDisposable
             _loadError = ex.Message;
             _rows = [];
             _totalCount = 0;
-            _windowKey = null;
+            _windowStateKey = null;
         }
         finally
         {
@@ -276,7 +312,11 @@ public partial class ServerGrid<TItem> : ComponentBase, IAsyncDisposable
         }
     }
 
-    /// <summary>Computes the spacer heights around the rendered rows and, in scaled mode, re-syncs the scrollbar to the anchor.</summary>
+    /// <summary>
+    /// Computes the spacer heights around the rendered rows. In scaled mode the window is placed so the anchor row
+    /// stays exactly where the user sees it, and the scrollbar is re-synced to the anchor's proportional position in
+    /// the same frame (see <see cref="RequestScrollSync"/>), so replacing a window never causes a visible jump.
+    /// </summary>
     private void PositionWindow()
     {
         var rowsHeight = _rows.Length * (double)RowHeight;
@@ -292,40 +332,36 @@ public partial class ServerGrid<TItem> : ComponentBase, IAsyncDisposable
         _topSpacer = Math.Max(0, target - _anchorOffset - overscanBefore * (double)RowHeight);
         _topSpacer = Math.Min(_topSpacer, Math.Max(0, VirtualHeight - rowsHeight));
         _bottomSpacer = Math.Max(0, VirtualHeight - _topSpacer - rowsHeight);
-
-        if (Math.Abs(target - _scrollTop) >= 0.5)
-        {
-            _scrollTop = target;
-            _ = SetScrollTopAsync(target);
-        }
+        RequestScrollSync(target);
     }
 
-    private async Task SetScrollTopAsync(double top)
+    /// <summary>
+    /// Asks the browser to set scrollTop. The value travels as a data attribute in the next render batch; the JS shim
+    /// applies it from a MutationObserver, i.e. after the whole batch (new spacers and rows) is in the DOM and before
+    /// the next paint, so scroll position and content always change together.
+    /// </summary>
+    private void RequestScrollSync(double top)
     {
-        if (_scroller is null) return;
-        try { await _scroller.InvokeVoidAsync("setScrollTop", top); }
-        catch (JSDisconnectedException) { }
-        catch (ObjectDisposedException) { }
+        _scrollTop = top;
+        _scrollSync = FormattableString.Invariant($"{top:0.##}:{++_scrollSyncSeq}");
     }
 
     /// <summary>Scrolls so that <paramref name="rowIndex"/> is visible (public so hosts can implement "go to row").</summary>
-    public Task ScrollToRowAsync(int rowIndex)
+    public async Task ScrollToRowAsync(int rowIndex)
     {
-        if (_totalCount <= 0) return Task.CompletedTask;
+        if (_totalCount <= 0) return;
         rowIndex = Math.Clamp(rowIndex, 0, _totalCount - 1);
         var visible = Math.Max(1, (int)Math.Floor(_clientHeight / RowHeight));
         var lastVisible = _anchorIndex + visible - 1 - (_anchorOffset > 0 ? 1 : 0);
 
-        if (rowIndex < _anchorIndex) { _anchorIndex = rowIndex; _anchorOffset = 0; }
-        else if (rowIndex > lastVisible) { _anchorIndex = Math.Min(MaxAnchor, rowIndex - visible + 1); _anchorOffset = Math.Max(0, visible * RowHeight - _clientHeight); }
-        else return Task.CompletedTask;
+        if (rowIndex < _anchorIndex) { _anchorIndex = rowIndex; _anchorOffset = 0; _scrollDirection = -1; }
+        else if (rowIndex > lastVisible) { _anchorIndex = Math.Min(MaxAnchor, rowIndex - visible + 1); _anchorOffset = Math.Max(0, visible * RowHeight - _clientHeight); _scrollDirection = 1; }
+        else return;
 
-        if (!IsScaled)
-        {
-            _scrollTop = _anchorIndex * (double)RowHeight + _anchorOffset;
-            _ = SetScrollTopAsync(_scrollTop);
-        }
-        return RequestWindowAsync(force: false);
+        await RequestWindowAsync(force: false);
+        // Position of the anchor row inside the rendered table, valid in both scaled and unscaled mode.
+        RequestScrollSync(_topSpacer + (_anchorIndex - _windowStart) * (double)RowHeight + _anchorOffset);
+        StateHasChanged();
     }
 
     // ---- data -----------------------------------------------------------------------------------
@@ -346,8 +382,8 @@ public partial class ServerGrid<TItem> : ComponentBase, IAsyncDisposable
         {
             _anchorIndex = 0;
             _anchorOffset = 0;
-            _scrollTop = 0;
-            _ = SetScrollTopAsync(0);
+            _scrollDirection = 0;
+            RequestScrollSync(0);
         }
         StateHasChanged();
         return RequestWindowAsync(force: true);
@@ -582,6 +618,9 @@ public partial class ServerGrid<TItem> : ComponentBase, IAsyncDisposable
     private object RowKeyFor(GridRow<TItem> row) => RowKey is not null ? RowKey(row.Item) : row.Item!;
 
     private static string Px(double value) => value.ToString("0.##", CultureInfo.InvariantCulture) + "px";
+
+    private string DiagnosticsText =>
+        $"anchor {_anchorIndex:N0}+{_anchorOffset:0}px · window {_windowStart:N0}–{(_windowStart + _rows.Length - 1):N0} ({_rows.Length}) · dir {_scrollDirection} · {(IsScaled ? "scaled" : "1:1")} · scrollTop {_scrollTop:N0}";
 
     private string StatusText
     {

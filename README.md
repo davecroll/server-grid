@@ -8,7 +8,7 @@ in-memory trades and stays responsive: filtering, sorting, searching and scrolli
 
 | Feature | Details |
 |---|---|
-| Infinite scroll | Custom virtualisation: only the rows in the viewport (plus a small overscan) are rendered. No pagination UI. |
+| Infinite scroll | Custom virtualisation: the server renders the visible rows plus a runway of overscan rows, and only replaces that window when you scroll near its edge. Ordinary wheel scrolling needs no round trip at all. No pagination UI. |
 | Very large sets | Browsers cap element height at ~16.7M px. Above that the scrollbar is scaled onto the row range while wheel/keyboard scrolling stays row-accurate, so 1M+ rows work. |
 | Sorting | Click a header to toggle asc/desc/off. **Shift+click** adds sort levels (numbered indicators). |
 | Excel-style filters | Every column header has a menu with: sort shortcuts, a typed condition (contains / begins with / between / greater than / is blank …) **and** a searchable distinct-value checklist with (Select All) and (Blanks). Value lists respect the other columns' filters, exactly like Excel. |
@@ -25,7 +25,9 @@ dotnet run
 # then open http://localhost:5247
 ```
 
-Row count is configurable in `appsettings.json` (`Grid:RowCount`, default 1,000,000).
+Row count is configurable in `appsettings.json` (`Grid:RowCount`, default 1,000,000). Add `?latency=200` to the
+URL to simulate a slow network (every data-source call is delayed by that many milliseconds) and show the
+scroller's diagnostics in the status bar.
 
 Tests:
 
@@ -54,9 +56,27 @@ dotnet test tests/ServerGrid.Tests
 * `Grid/QueryableGridDataSource.cs` pushes everything into `IQueryable` (`Where`, `OrderBy`, `Skip`,
   `Take`, `Distinct`) — plug in EF Core's `ToListAsync`/`CountAsync` via its delegates.
 
-The only JavaScript is `Components/Grid/ServerGrid.razor.js` (~90 lines): it reports the viewport's
+The only JavaScript is `Components/Grid/ServerGrid.razor.js` (~120 lines): it reports the viewport's
 scroll position to the server, applies scroll offsets the server requests, and tracks column-resize drags
 locally so they are smooth. **No row data ever passes through it.**
+
+### Scrolling on slow networks
+
+The browser owns scrolling; the server only decides *which* rows are in the DOM.
+
+* **Runway + hysteresis.** Each fetch renders `OverscanBehind` rows above the viewport, the visible rows, and
+  `OverscanCount` rows below (the two swap when scrolling up). Nothing is fetched until the visible rows come
+  within `FetchMargin` rows of the window's edge. With the defaults (15 / 40 / 10) a wheel scroll of ~30 rows
+  costs one round trip, and everything in between is native browser scrolling with zero latency.
+* **Skeleton spacers.** The unrendered regions above and below the window are drawn as skeleton rows (row rules
+  and a faint text bar) rather than blank space, so a long flick reads as "loading", not "broken".
+* **Scaled mode.** Browsers cap element heights at roughly 16.7M px, so above ~550,000 rows at 30 px the
+  scrollbar is scaled onto the row range. Wheel, touch and keyboard scrolling still move exactly one row per row
+  height; scrollbar drags map the thumb proportionally onto the whole set. The scrollbar is re-synced to the
+  row position only when a window is replaced, and the new scroll offset travels inside the same render batch as
+  the new rows (applied from a `MutationObserver`), so the correction is never visible.
+* What remains network-bound: a jump into a region that has never been rendered (a long scrollbar drag) shows
+  skeleton rows for one round trip. No server-rendered design can avoid that.
 
 ## Using the component
 

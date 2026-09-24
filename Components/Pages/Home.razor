@@ -11,10 +11,18 @@
         <p>
             @Repository.Trades.Length.ToString("N0") rows live only on the server. Scroll, sort (Shift+click for multi-level),
             filter every column from its header menu, or search. Only the rendered HTML diff crosses the wire.
+            @if (Latency > 0)
+            {
+                <strong>Simulating @Latency ms of latency per fetch.</strong>
+            }
+            else
+            {
+                <span>Add <code>?latency=200</code> to the URL to simulate a slow network.</span>
+            }
         </p>
     </header>
 
-    <ServerGrid TItem="Trade" DataSource="_dataSource" Height="calc(100vh - 11rem)" RowHeight="30" RowKey="t => t.Id" Title="Trade blotter">
+    <ServerGrid TItem="Trade" DataSource="_dataSource!" Height="calc(100vh - 11rem)" RowHeight="30" RowKey="t => t.Id" Title="Trade blotter" ShowDiagnostics="Latency > 0">
         <GridColumn Property="@(t => t.Id)" Title="Trade #" Width="90" Frozen="true" Format="D" QuickSearchable="false" />
         <GridColumn Property="@(t => t.TradeDate)" Title="Trade Date" Width="110" />
         <GridColumn Property="@(t => t.BookedAt)" Title="Booked" Width="150" Format="yyyy-MM-dd HH:mm" />
@@ -41,11 +49,18 @@
 </div>
 
 @code {
-    private InMemoryGridDataSource<Trade> _dataSource = default!;
+    private IGridDataSource<Trade>? _dataSource;
+    private int _appliedLatency = -1;
 
-    protected override void OnInitialized()
+    /// <summary>Optional artificial delay per data-source call, e.g. <c>/?latency=200</c>.</summary>
+    [SupplyParameterFromQuery(Name = "latency")] public int Latency { get; set; }
+
+    protected override void OnParametersSet()
     {
+        if (_appliedLatency == Latency) return;
+        _appliedLatency = Latency;
         // One data source per circuit: it caches the current filtered/sorted view for this user only.
-        _dataSource = new InMemoryGridDataSource<Trade>(Repository.Trades);
+        IGridDataSource<Trade> source = new InMemoryGridDataSource<Trade>(Repository.Trades);
+        _dataSource = Latency > 0 ? new LatencyGridDataSource<Trade>(source, Latency) : source;
     }
 }

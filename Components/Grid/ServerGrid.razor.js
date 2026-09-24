@@ -1,10 +1,11 @@
 // Minimal scroll plumbing for ServerGrid. No data ever flows through here: the module only reports the
-// viewport's scroll position/size to .NET and applies scroll offsets the server asks for.
+// viewport's scroll position/size to .NET, applies scroll offsets the server asks for, and tracks resize drags.
 export function attach(viewport, dotnet) {
     let rafPending = false;
     let lastReported = viewport.scrollTop;
     let relativeUntil = 0;          // wheel/touch/keyboard scrolls are "relative"; scrollbar drags are "absolute"
-    let suppressTop = null;         // ignore the scroll event caused by our own setScrollTop
+    let pendingRelative = false;    // classification captured when each scroll event arrives, not when the timer fires
+    let suppressTop = null;         // ignore the scroll event caused by our own scroll sync
     let disposed = false;
 
     const markRelative = () => { relativeUntil = performance.now() + 150; };
@@ -22,13 +23,15 @@ export function attach(viewport, dotnet) {
         suppressTop = null;
         const delta = top - lastReported;
         lastReported = top;
-        const relative = performance.now() < relativeUntil;
+        const relative = pendingRelative;
+        pendingRelative = false;
         dotnet.invokeMethodAsync('OnViewportChanged', top, height, delta, relative).catch(e => console.error('ServerGrid viewport callback failed', e));
     };
 
     // Coalesce bursts of scroll events into one report per turn. A timer (not requestAnimationFrame) so it
     // also fires while the tab is in the background.
     const schedule = () => {
+        if (performance.now() < relativeUntil) pendingRelative = true;
         if (!rafPending) {
             rafPending = true;
             setTimeout(report, 16);
@@ -45,7 +48,7 @@ export function attach(viewport, dotnet) {
         if (navKeys.has(e.key) && e.target === viewport) e.preventDefault();
     };
     viewport.addEventListener('keydown', onKeyDown);
-    const resizeObserver = new ResizeObserver(schedule);
+    const resizeObserver = new ResizeObserver(() => { if (!rafPending) { rafPending = true; setTimeout(report, 16); } });
     resizeObserver.observe(viewport);
 
     // Column resizing: tracked locally with pointer capture so the drag is smooth, then the final
@@ -81,16 +84,25 @@ export function attach(viewport, dotnet) {
         handle.addEventListener('pointercancel', up);
     };
     viewport.addEventListener('pointerdown', onPointerDown);
+
+    // Server-requested scroll positions arrive as a data attribute inside a render batch. Applying them from a
+    // MutationObserver means the new rows/spacers and the new scrollTop land in the same frame: no flicker.
+    const applyScrollSync = () => {
+        const value = viewport.dataset.scrollSync;
+        if (!value) return;
+        const top = parseFloat(value.split(':')[0]);
+        if (!isFinite(top)) return;
+        if (Math.abs(viewport.scrollTop - top) < 0.5) { lastReported = viewport.scrollTop; return; }
+        suppressTop = top;
+        lastReported = top;
+        viewport.scrollTop = top;
+    };
+    const syncObserver = new MutationObserver(applyScrollSync);
+    syncObserver.observe(viewport, { attributes: true, attributeFilter: ['data-scroll-sync'] });
+    applyScrollSync();
     report();
 
     return {
-        setScrollTop(top) {
-            if (disposed) return;
-            if (Math.abs(viewport.scrollTop - top) < 0.5) { lastReported = viewport.scrollTop; return; }
-            suppressTop = top;
-            lastReported = top;
-            viewport.scrollTop = top;
-        },
         dispose() {
             disposed = true;
             viewport.removeEventListener('scroll', schedule);
@@ -99,6 +111,7 @@ export function attach(viewport, dotnet) {
             viewport.removeEventListener('keydown', onKeyDown);
             viewport.removeEventListener('pointerdown', onPointerDown);
             resizeObserver.disconnect();
+            syncObserver.disconnect();
         }
     };
 }
