@@ -67,7 +67,8 @@
 .sg-chip button:hover { background: rgba(0,0,0,.08); }
 
 /* ---- viewport & table ------------------------------------------------------ */
-.sg-viewport { overflow: auto; position: relative; outline: none; background: #fff; contain: layout paint; overscroll-behavior: contain; }
+.sg-viewport { overflow: auto; position: relative; outline: none; background: #fff; overscroll-behavior: contain; }
+/* No CSS containment here: it would create a stacking context and put the header menus below the click-away backdrop. */
 .sg-viewport:focus-visible { box-shadow: inset 0 0 0 2px rgba(16,124,65,.35); }
 .sg-table { border-collapse: separate; border-spacing: 0; table-layout: fixed; min-width: 100%; }
 
