@@ -47,6 +47,12 @@ public partial class ServerGrid<TItem> : ComponentBase, IAsyncDisposable
     [Parameter] public int FetchMargin { get; set; } = 10;
 
     /// <summary>
+    /// Guess of how many rows fit in the viewport, used to fetch the first window during the initial render instead of
+    /// waiting a round trip for the browser to report its size. A wrong guess only costs one extra fetch.
+    /// </summary>
+    [Parameter] public int InitialVisibleRows { get; set; } = 30;
+
+    /// <summary>
     /// Browsers cap element heights (Chrome ≈16.7M px, Firefox ≈17.9M px). When rows × RowHeight exceeds this the
     /// scrollbar is scaled: the thumb maps proportionally onto the row range while wheel/keyboard scrolling stays row-accurate.
     /// </summary>
@@ -131,6 +137,16 @@ public partial class ServerGrid<TItem> : ComponentBase, IAsyncDisposable
     }
 
     // ---- lifecycle ------------------------------------------------------------------------------
+
+    /// <summary>Called by <see cref="Defer"/> during the first render, once every column has registered.</summary>
+    private void OnColumnsReady()
+    {
+        if (_viewportKnown || Columns.Count == 0) return;
+        // Provisional viewport: rows land in the first render batches, before the browser has even loaded the shim.
+        _clientHeight = InitialVisibleRows * (double)RowHeight;
+        _viewportKnown = true;
+        _ = RequestWindowAsync(force: true);
+    }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {

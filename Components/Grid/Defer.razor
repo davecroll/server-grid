@@ -1,7 +1,11 @@
 @* Renders its content after sibling components have initialised. Used so column components can register
-   with the grid during the same render pass in which the grid draws its table. *@
+   with the grid during the same render pass in which the grid draws its table. OnReady fires once, at that
+   point, so the grid can start fetching rows without waiting for the browser. *@
 @ChildContent
 
 @code {
     [Parameter] public RenderFragment? ChildContent { get; set; }
+    [Parameter] public Action? OnReady { get; set; }
+
+    protected override void OnInitialized() => OnReady?.Invoke();
 }

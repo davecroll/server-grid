@@ -15,7 +15,16 @@
 <body>
     <Routes @rendermode="new InteractiveServerRenderMode(prerender: false)" />
     <ReconnectModal />
-    <script src="@Assets["_framework/blazor.web.js"]"></script>
+    <script src="@Assets["_framework/blazor.web.js"]" autostart="false"></script>
+    <script>
+        // Connect straight over WebSockets and skip the SignalR negotiate request: one round trip less on every
+        // page load. Trade-off: no fallback to long polling if a proxy blocks WebSockets (transport 1 = WebSockets).
+        Blazor.start({
+            circuit: {
+                configureSignalR: builder => builder.withUrl('_blazor', { skipNegotiation: true, transport: 1 })
+            }
+        });
+    </script>
 </body>
 
 </html>

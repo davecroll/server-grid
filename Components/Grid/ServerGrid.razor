@@ -5,7 +5,7 @@
 
 <CascadingValue Value="this" IsFixed="true">
     @ChildContent
-    <Defer>
+    <Defer OnReady="OnColumnsReady">
         <div class="sg-root @CssClass" style="--sg-row-height:@Px(RowHeight)">
 
             @if (ShowToolbar)
