@@ -1,0 +1,365 @@
+@namespace ServerGrid.Components.Grid
+@using System.Globalization
+@using ServerGrid.Grid
+@typeparam TItem
+@implements IDisposable
+
+<div class="cfm @(AlignRight ? "cfm-right" : "")" @onclick:stopPropagation @onkeydown:stopPropagation>
+    <div class="cfm-section cfm-actions">
+        <button type="button" class="cfm-action" @onclick="() => OnSort.InvokeAsync(false)">
+            <span class="cfm-icon">▲</span> @SortAscLabel
+        </button>
+        <button type="button" class="cfm-action" @onclick="() => OnSort.InvokeAsync(true)">
+            <span class="cfm-icon">▼</span> @SortDescLabel
+        </button>
+        <button type="button" class="cfm-action" disabled="@(Current is null)" @onclick="() => OnApply.InvokeAsync(null)">
+            <span class="cfm-icon">⨯</span> Clear filter from "@Column.EffectiveTitle"
+        </button>
+        @if (CanHide)
+        {
+            <button type="button" class="cfm-action" @onclick="() => OnHide.InvokeAsync()">
+                <span class="cfm-icon">⊟</span> Hide column
+            </button>
+        }
+    </div>
+
+    @if (_operators.Count > 0)
+    {
+        <div class="cfm-section">
+            <div class="cfm-label">@KindLabel filter</div>
+            <div class="cfm-condition">
+                <select @bind="_operatorText">
+                    <option value="">(no condition)</option>
+                    @foreach (var op in _operators)
+                    {
+                        <option value="@op">@GridExpressionBuilder.Describe(op)</option>
+                    }
+                </select>
+                @if (SelectedOperator is { } op1 && GridExpressionBuilder.NeedsOneOperand(op1))
+                {
+                    @OperandInput(1)
+                    @if (GridExpressionBuilder.NeedsTwoOperands(op1))
+                    {
+                        <span class="cfm-and">and</span>
+                        @OperandInput(2)
+                    }
+                }
+            </div>
+            @if (_error is not null)
+            {
+                <div class="cfm-error">@_error</div>
+            }
+        </div>
+    }
+
+    <div class="cfm-section cfm-values">
+        <input type="search" class="cfm-search" placeholder="Search values…" value="@_search" @oninput="OnSearchInput" />
+        <div class="cfm-list">
+            @if (_loading && _values is null)
+            {
+                <div class="cfm-muted">Loading values…</div>
+            }
+            else if (_values is not null)
+            {
+                var listed = ListedValues.ToList();
+                <label class="cfm-check cfm-check-all">
+                    <input type="checkbox" checked="@(listed.Count > 0 && listed.All(IsChecked))" disabled="@(listed.Count == 0)" @onchange="e => SelectAllListed(e.Value is true)" />
+                    <span>(Select All@(string.IsNullOrWhiteSpace(_search) ? "" : " Search Results"))</span>
+                </label>
+                @foreach (var v in listed)
+                {
+                    <label class="cfm-check" @key="v ?? BlankKey">
+                        <input type="checkbox" checked="@IsChecked(v)" @onchange="() => Toggle(v)" />
+                        <span>@(v is null ? "(Blanks)" : Column.Definition.Format(v))</span>
+                    </label>
+                }
+                @if (_values.IsTruncated)
+                {
+                    <div class="cfm-muted">Showing @_values.Values.Count.ToString("N0") of @_values.TotalDistinct.ToString("N0") values — type to narrow the list.</div>
+                }
+                else if (listed.Count == 0)
+                {
+                    <div class="cfm-muted">No matching values.</div>
+                }
+            }
+            @if (_loading && _values is not null)
+            {
+                <div class="cfm-loading-bar"></div>
+            }
+        </div>
+    </div>
+
+    <div class="cfm-footer">
+        <button type="button" class="cfm-btn cfm-btn-primary" @onclick="ApplyAsync">OK</button>
+        <button type="button" class="cfm-btn" @onclick="() => OnCancel.InvokeAsync()">Cancel</button>
+    </div>
+</div>
+
+@code {
+    private static readonly object BlankKey = new();
+
+    [Parameter, EditorRequired] public GridColumnBase<TItem> Column { get; set; } = default!;
+    [Parameter] public ColumnFilter? Current { get; set; }
+    [Parameter] public bool AlignRight { get; set; }
+    [Parameter] public bool CanHide { get; set; } = true;
+    [Parameter, EditorRequired] public Func<string?, CancellationToken, ValueTask<GridDistinctValuesResult>> LoadValues { get; set; } = default!;
+    [Parameter] public EventCallback<ColumnFilter?> OnApply { get; set; }
+    [Parameter] public EventCallback<bool> OnSort { get; set; }
+    [Parameter] public EventCallback OnHide { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+
+    private IReadOnlyList<FilterOperator> _operators = [];
+    private string _operatorText = "";
+    private string _value1 = "";
+    private string _value2 = "";
+    private string? _error;
+
+    private ValueSetMode _mode = ValueSetMode.Exclude;   // Exclude + empty set == "everything selected"
+    private readonly HashSet<object?> _set = [];
+
+    private GridDistinctValuesResult? _values;
+    private bool _loading;
+    private string _search = "";
+    private CancellationTokenSource? _cts;
+
+    private FilterOperator? SelectedOperator => Enum.TryParse<FilterOperator>(_operatorText, out var op) ? op : null;
+
+    private IEnumerable<object?> ListedValues
+    {
+        get
+        {
+            if (_values is null) yield break;
+            if (_values.HasBlanks) yield return null;
+            foreach (var v in _values.Values) yield return v;
+        }
+    }
+
+    private string KindLabel => Column.Kind switch
+    {
+        GridValueKind.Text => "Text",
+        GridValueKind.Number => "Number",
+        GridValueKind.Date => "Date",
+        GridValueKind.Boolean => "Value",
+        GridValueKind.Enum => "Value",
+        _ => "Value",
+    };
+
+    private string SortAscLabel => Column.Kind switch
+    {
+        GridValueKind.Number => "Sort Smallest to Largest",
+        GridValueKind.Date => "Sort Oldest to Newest",
+        _ => "Sort A to Z",
+    };
+
+    private string SortDescLabel => Column.Kind switch
+    {
+        GridValueKind.Number => "Sort Largest to Smallest",
+        GridValueKind.Date => "Sort Newest to Oldest",
+        _ => "Sort Z to A",
+    };
+
+    protected override void OnInitialized()
+    {
+        _operators = GridExpressionBuilder.OperatorsFor(Column.Kind, Column.IsNullable);
+        if (Current is not null)
+        {
+            _operatorText = Current.Operator?.ToString() ?? "";
+            _value1 = ToInputString(Current.Value);
+            _value2 = ToInputString(Current.Value2);
+            if (Current.HasValueSet)
+            {
+                _mode = Current.ValueSetMode;
+                foreach (var v in Current.Values) _set.Add(v is string s && s.Length == 0 ? null : v);
+            }
+        }
+        _ = LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        _cts?.Cancel();
+        _cts?.Dispose();
+        var cts = _cts = new CancellationTokenSource();
+        _loading = true;
+        try
+        {
+            var result = await LoadValues(string.IsNullOrWhiteSpace(_search) ? null : _search, cts.Token);
+            if (cts.IsCancellationRequested) return;
+            _values = result;
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        catch (Exception ex)
+        {
+            _error = "Could not load values: " + ex.Message;
+        }
+        finally
+        {
+            if (!cts.IsCancellationRequested) _loading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task OnSearchInput(ChangeEventArgs e)
+    {
+        _search = e.Value?.ToString() ?? "";
+        _cts?.Cancel();
+        var debounce = new CancellationTokenSource();
+        _cts = debounce;
+        try
+        {
+            await Task.Delay(200, debounce.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        await LoadAsync();
+    }
+
+    // ---- value list semantics (Excel-style include/exclude sets) --------------------------------
+
+    private bool IsChecked(object? value) => _mode == ValueSetMode.Include ? _set.Contains(value) : !_set.Contains(value);
+
+    private void Toggle(object? value)
+    {
+        if (_mode == ValueSetMode.Include)
+        {
+            if (!_set.Remove(value)) _set.Add(value);
+        }
+        else
+        {
+            if (!_set.Remove(value)) _set.Add(value);
+        }
+    }
+
+    private void SelectAllListed(bool check)
+    {
+        var listed = ListedValues.ToList();
+        var searching = !string.IsNullOrWhiteSpace(_search);
+
+        if (!searching && !(_values?.IsTruncated ?? false))
+        {
+            // The list is the whole domain: reset to the cheapest representation.
+            _set.Clear();
+            _mode = check ? ValueSetMode.Exclude : ValueSetMode.Include;
+            return;
+        }
+
+        foreach (var v in listed)
+        {
+            var currently = IsChecked(v);
+            if (currently != check) Toggle(v);
+        }
+    }
+
+    // ---- apply ----------------------------------------------------------------------------------
+
+    private async Task ApplyAsync()
+    {
+        _error = null;
+        var filter = new ColumnFilter { ColumnKey = Column.EffectiveKey };
+
+        if (SelectedOperator is { } op)
+        {
+            try
+            {
+                if (GridExpressionBuilder.NeedsOneOperand(op))
+                {
+                    if (string.IsNullOrWhiteSpace(_value1))
+                    {
+                        _error = "Enter a value for the condition.";
+                        return;
+                    }
+                    filter.Value = ParseOperand(_value1);
+                    if (GridExpressionBuilder.NeedsTwoOperands(op))
+                    {
+                        if (string.IsNullOrWhiteSpace(_value2))
+                        {
+                            _error = "Enter both values for 'between'.";
+                            return;
+                        }
+                        filter.Value2 = ParseOperand(_value2);
+                    }
+                }
+                filter.Operator = op;
+            }
+            catch (Exception ex) when (ex is FormatException or OverflowException or InvalidCastException or ArgumentException)
+            {
+                _error = $"'{_value1}' is not a valid {KindLabel.ToLowerInvariant()}.";
+                return;
+            }
+        }
+
+        if (_mode == ValueSetMode.Include || _set.Count > 0)
+        {
+            filter.ValueSetMode = _mode;
+            filter.Values = new HashSet<object?>(_set);
+        }
+
+        await OnApply.InvokeAsync(filter.IsActive ? filter : null);
+    }
+
+    private object ParseOperand(string text)
+    {
+        var trimmed = text.Trim();
+        return Column.Kind == GridValueKind.Text
+            ? trimmed
+            : GridExpressionBuilder.ConvertValue(trimmed, Column.ValueType)!;
+    }
+
+    private static string ToInputString(object? value) => value switch
+    {
+        null => "",
+        DateOnly d => d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+        DateTime dt => dt.ToString("yyyy-MM-ddTHH:mm", CultureInfo.InvariantCulture),
+        DateTimeOffset dto => dto.ToString("yyyy-MM-ddTHH:mm", CultureInfo.InvariantCulture),
+        bool b => b ? "true" : "false",
+        IFormattable f => f.ToString(null, CultureInfo.InvariantCulture),
+        _ => value.ToString() ?? "",
+    };
+
+    private RenderFragment OperandInput(int which) => __builder =>
+    {
+        var value = which == 1 ? _value1 : _value2;
+        Action<string> set = which == 1 ? v => _value1 = v : v => _value2 = v;
+        var nonNullable = Nullable.GetUnderlyingType(Column.ValueType) ?? Column.ValueType;
+
+        switch (Column.Kind)
+        {
+            case GridValueKind.Enum:
+                <select value="@value" @onchange="e => set(e.Value?.ToString() ?? string.Empty)">
+                    <option value="">(choose)</option>
+                    @foreach (var name in Enum.GetNames(nonNullable))
+                    {
+                        <option value="@name">@name</option>
+                    }
+                </select>
+                break;
+            case GridValueKind.Boolean:
+                <select value="@value" @onchange="e => set(e.Value?.ToString() ?? string.Empty)">
+                    <option value="">(choose)</option>
+                    <option value="true">Yes</option>
+                    <option value="false">No</option>
+                </select>
+                break;
+            case GridValueKind.Date:
+                <input type="@(nonNullable == typeof(DateOnly) ? "date" : "datetime-local")" value="@value" @onchange="e => set(e.Value?.ToString() ?? string.Empty)" />
+                break;
+            case GridValueKind.Number:
+                <input type="number" step="any" value="@value" @onchange="e => set(e.Value?.ToString() ?? string.Empty)" />
+                break;
+            default:
+                <input type="text" value="@value" @onchange="e => set(e.Value?.ToString() ?? string.Empty)" />
+                break;
+        }
+    };
+
+    public void Dispose()
+    {
+        _cts?.Cancel();
+        _cts?.Dispose();
+    }
+}

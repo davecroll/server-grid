@@ -1,0 +1,7 @@
+@* Renders its content after sibling components have initialised. Used so column components can register
+   with the grid during the same render pass in which the grid draws its table. *@
+@ChildContent
+
+@code {
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+}

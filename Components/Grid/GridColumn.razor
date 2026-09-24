@@ -1,0 +1,92 @@
+@namespace ServerGrid.Components.Grid
+@using System.Globalization
+@using System.Linq.Expressions
+@using ServerGrid.Grid
+@typeparam TItem
+@typeparam TValue
+@inherits GridColumnBase<TItem>
+
+@* Columns render nothing themselves; the grid draws them. *@
+
+@code {
+    private string? _propertySignature;
+    private Func<TItem, TValue> _getter = _ => default!;
+    private string _inferredKey = "";
+    private GridColumnDefinition<TItem>? _definition;
+    private string? _definitionFormat;
+
+    /// <summary>The value this column displays, sorts and filters on. Must be an expression so it can be pushed into the data source.</summary>
+    [Parameter, EditorRequired] public Expression<Func<TItem, TValue>> Property { get; set; } = default!;
+
+    public override string EffectiveKey => Key ?? _inferredKey;
+    public override string EffectiveTitle => Title ?? Humanize(_inferredKey.Split('.').Last());
+    public override Type ValueType => typeof(TValue);
+    public override GridValueKind Kind => GridColumnDefinition<TItem>.GetKind(Nullable.GetUnderlyingType(typeof(TValue)) ?? typeof(TValue));
+    public override bool IsNullable => !typeof(TValue).IsValueType || Nullable.GetUnderlyingType(typeof(TValue)) is not null;
+
+    public override GridColumnDefinition<TItem> Definition
+    {
+        get
+        {
+            if (_definition is null || _definitionFormat != Format)
+            {
+                _definitionFormat = Format;
+                _definition = new GridColumnDefinition<TItem>
+                {
+                    Key = EffectiveKey,
+                    Selector = Property,
+                    ValueType = typeof(TValue),
+                    QuickSearchable = QuickSearchable && typeof(TValue) == typeof(string),
+                    Format = FormatValue,
+                };
+            }
+            return _definition;
+        }
+    }
+
+    protected override void OnParametersSet()
+    {
+        if (Property is null) throw new InvalidOperationException("GridColumn requires a Property expression.");
+
+        // Razor rebuilds the expression object on every render; only recompile when its shape actually changes.
+        var signature = Property.ToString();
+        if (signature != _propertySignature)
+        {
+            _propertySignature = signature;
+            _getter = Property.Compile();
+            _inferredKey = InferKey(Property.Body) ?? Title ?? Key ?? signature;
+            _definition = null;
+        }
+        base.OnParametersSet();
+    }
+
+    public override string FormatCell(TItem item) => FormatValue(_getter(item));
+
+    private string FormatValue(object? value)
+    {
+        switch (value)
+        {
+            case null: return string.Empty;
+            case bool b: return b ? "Yes" : "No";
+            case IFormattable f when Format is not null: return f.ToString(Format, CultureInfo.CurrentCulture);
+            case DateOnly d: return d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            case DateTime dt: return dt.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+            case IFormattable f: return f.ToString(null, CultureInfo.CurrentCulture);
+            default: return value.ToString() ?? string.Empty;
+        }
+    }
+
+    private static string? InferKey(Expression body)
+    {
+        while (body is UnaryExpression { NodeType: ExpressionType.Convert or ExpressionType.ConvertChecked } u) body = u.Operand;
+        if (body is not MemberExpression m) return null;
+        var parts = new Stack<string>();
+        Expression? current = m;
+        while (current is MemberExpression me)
+        {
+            parts.Push(me.Member.Name);
+            current = me.Expression;
+        }
+        return string.Join('.', parts);
+    }
+}

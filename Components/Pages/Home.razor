@@ -1,0 +1,51 @@
+@page "/"
+@using ServerGrid.Data
+@using ServerGrid.Grid
+@inject TradeRepository Repository
+
+<PageTitle>Server-side grid</PageTitle>
+
+<div class="page">
+    <header class="page-header">
+        <h1>Trades</h1>
+        <p>
+            @Repository.Trades.Length.ToString("N0") rows live only on the server. Scroll, sort (Shift+click for multi-level),
+            filter every column from its header menu, or search. Only the rendered HTML diff crosses the wire.
+        </p>
+    </header>
+
+    <ServerGrid TItem="Trade" DataSource="_dataSource" Height="calc(100vh - 11rem)" RowHeight="30" RowKey="t => t.Id" Title="Trade blotter">
+        <GridColumn Property="@(t => t.Id)" Title="Trade #" Width="90" Frozen="true" Format="D" QuickSearchable="false" />
+        <GridColumn Property="@(t => t.TradeDate)" Title="Trade Date" Width="110" />
+        <GridColumn Property="@(t => t.BookedAt)" Title="Booked" Width="150" Format="yyyy-MM-dd HH:mm" />
+        <GridColumn Property="@(t => t.Trader)" Width="150" />
+        <GridColumn Property="@(t => t.Desk)" Width="120" />
+        <GridColumn Property="@(t => t.Region)" Width="90" />
+        <GridColumn Property="@(t => t.Counterparty)" Width="170" />
+        <GridColumn Property="@(t => t.Ticker)" Width="90" />
+        <GridColumn Property="@(t => t.Instrument)" Width="180" />
+        <GridColumn Property="@(t => t.Side)" Width="80">
+            <CellTemplate>
+                <span class="side side-@context.Side.ToString().ToLowerInvariant()">@context.Side</span>
+            </CellTemplate>
+        </GridColumn>
+        <GridColumn Property="@(t => t.Quantity)" Width="110" Format="N0" />
+        <GridColumn Property="@(t => t.Price)" Width="110" Format="N2" />
+        <GridColumn Property="@(t => t.Notional)" Width="150" Format="N2" />
+        <GridColumn Property="@(t => t.Currency)" Title="Ccy" Width="70" />
+        <GridColumn Property="@(t => t.Status)" Width="110" />
+        <GridColumn Property="@(t => t.IsSettled)" Title="Settled" Width="80" />
+        <GridColumn Property="@(t => t.Commission)" Width="120" Format="N2" />
+        <GridColumn Property="@(t => t.Notes)" Width="160" />
+    </ServerGrid>
+</div>
+
+@code {
+    private InMemoryGridDataSource<Trade> _dataSource = default!;
+
+    protected override void OnInitialized()
+    {
+        // One data source per circuit: it caches the current filtered/sorted view for this user only.
+        _dataSource = new InMemoryGridDataSource<Trade>(Repository.Trades);
+    }
+}

@@ -1,0 +1,8 @@
+.page { padding: 16px 20px; max-width: 100%; box-sizing: border-box; }
+.page-header { display: flex; align-items: baseline; gap: 16px; margin-bottom: 12px; flex-wrap: wrap; }
+.page-header h1 { margin: 0; font-size: 20px; font-weight: 600; }
+.page-header p { margin: 0; color: #666; font-size: 13px; }
+
+::deep .side { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11.5px; font-weight: 600; }
+::deep .side-buy { background: #e3f1e8; color: #0f5a2f; }
+::deep .side-sell { background: #fbe4e4; color: #8a1c1c; }

@@ -1,0 +1,218 @@
+@namespace ServerGrid.Components.Grid
+@using System.Globalization
+@using ServerGrid.Grid
+@typeparam TItem
+
+<CascadingValue Value="this" IsFixed="true">
+    @ChildContent
+    <Defer>
+        <div class="sg-root @CssClass" style="--sg-row-height:@Px(RowHeight)">
+
+            @if (ShowToolbar)
+            {
+                <div class="sg-toolbar">
+                    @if (Title is not null)
+                    {
+                        <span class="sg-title">@Title</span>
+                    }
+                    <label class="sg-search">
+                        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="6.5" cy="6.5" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10 10l4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+                        <input type="search" placeholder="Search all text columns…" value="@_quickSearchInput" @oninput="OnQuickSearchInput" />
+                    </label>
+                    <button type="button" class="sg-btn" disabled="@(!HasActiveFilters)" @onclick="ClearAllFiltersAsync">Clear filters</button>
+                    <button type="button" class="sg-btn" disabled="@(_sorts.Count == 0)" @onclick="ClearSortAsync">Clear sort</button>
+                    <div class="sg-menu-anchor">
+                        <button type="button" class="sg-btn @(_columnChooserOpen ? "sg-btn-open" : "")" @onclick="ToggleColumnChooser">
+                            Columns <span class="sg-caret">▾</span>
+                        </button>
+                        @if (_columnChooserOpen)
+                        {
+                            <div class="sg-dropdown sg-column-chooser">
+                                @foreach (var col in Columns)
+                                {
+                                    <label class="sg-check">
+                                        <input type="checkbox" checked="@col.IsVisible" @onchange="() => ToggleColumnVisible(col)" />
+                                        <span>@col.EffectiveTitle</span>
+                                    </label>
+                                }
+                                <div class="sg-dropdown-footer">
+                                    <button type="button" class="sg-link" @onclick="ShowAllColumns">Show all</button>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                    <span class="sg-spacer"></span>
+                    <span class="sg-status-inline">
+                        @if (_pendingLoads > 0)
+                        {
+                            <span class="sg-spinner" aria-label="Loading"></span>
+                        }
+                        @StatusText
+                    </span>
+                </div>
+            }
+
+            @if (_filters.Count > 0 || _sorts.Count > 0)
+            {
+                <div class="sg-chips">
+                    @foreach (var filter in _filters.Values)
+                    {
+                        var column = Columns.FirstOrDefault(c => c.EffectiveKey == filter.ColumnKey);
+                        <span class="sg-chip sg-chip-filter">
+                            <strong>@(column?.EffectiveTitle ?? filter.ColumnKey)</strong> @DescribeFilter(filter)
+                            <button type="button" title="Remove filter" @onclick="() => ClearFilterAsync(filter.ColumnKey)">×</button>
+                        </span>
+                    }
+                    @if (_sorts.Count > 0)
+                    {
+                        <span class="sg-chip sg-chip-sort">
+                            Sorted by
+                            @for (var i = 0; i < _sorts.Count; i++)
+                            {
+                                var sort = _sorts[i];
+                                var column = Columns.FirstOrDefault(c => c.EffectiveKey == sort.ColumnKey);
+                                <strong>@(i > 0 ? ", " : " ")@(column?.EffectiveTitle ?? sort.ColumnKey) @(sort.Descending ? "▼" : "▲")</strong>
+                            }
+                            <button type="button" title="Clear sort" @onclick="ClearSortAsync">×</button>
+                        </span>
+                    }
+                </div>
+            }
+
+            <div class="sg-viewport" style="height:@Height" tabindex="0" @ref="_viewportElement" @onkeydown="OnKeyDown">
+                <table class="sg-table" style="width:@Px(TableWidth)">
+                    <colgroup>
+                        @foreach (var col in VisibleColumns)
+                        {
+                            <col style="width:@Px(col.WidthPx)" />
+                        }
+                    </colgroup>
+                    <thead>
+                        <tr>
+                            @foreach (var col in VisibleColumns)
+                            {
+                                var sortIndex = SortIndexOf(col);
+                                var filtered = IsFiltered(col);
+                                var menuOpen = ReferenceEquals(_menuColumn, col);
+                                <th class="sg-th @(col.Frozen ? "sg-frozen" : "") @(menuOpen ? "sg-th-menu-open" : "") @(sortIndex >= 0 ? "sg-th-sorted" : "") @(filtered ? "sg-th-filtered" : "")"
+                                    style="width:@Px(col.WidthPx)" data-key="@col.EffectiveKey">
+                                    <div class="sg-th-inner">
+                                        <button type="button" class="sg-th-title sg-align-@col.EffectiveAlign.ToString().ToLowerInvariant()"
+                                                disabled="@(!col.Sortable)"
+                                                title="@(col.Sortable ? $"{col.EffectiveTitle} — click to sort, Shift+click to add a sort level" : col.EffectiveTitle)"
+                                                @onclick="e => OnHeaderClickAsync(col, e)">
+                                            <span class="sg-th-text">@col.EffectiveTitle</span>
+                                            @if (sortIndex >= 0)
+                                            {
+                                                <span class="sg-sort-indicator">
+                                                    @(_sorts[sortIndex].Descending ? "▼" : "▲")@if (_sorts.Count > 1) { <sup>@(sortIndex + 1)</sup> }
+                                                </span>
+                                            }
+                                        </button>
+                                        @if (col.Filterable)
+                                        {
+                                            <button type="button" class="sg-filter-btn @(filtered ? "sg-active" : "") @(menuOpen ? "sg-open" : "")"
+                                                    title="@(filtered ? "Filter applied — click to edit" : "Sort & filter")"
+                                                    @onclick="() => ToggleFilterMenu(col)">
+                                                @if (filtered)
+                                                {
+                                                    <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M1.5 2h13L9.5 8.5V14l-3-1.5v-4z" fill="currentColor"/></svg>
+                                                }
+                                                else
+                                                {
+                                                    <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M3 6l5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                                                }
+                                            </button>
+                                        }
+                                    </div>
+                                    @if (AllowColumnResize)
+                                    {
+                                        <div class="sg-resizer" title="Drag to resize"></div>
+                                    }
+                                    @if (menuOpen)
+                                    {
+                                        <ColumnFilterMenu TItem="TItem"
+                                                          Column="col"
+                                                          Current="GetFilter(col.EffectiveKey)"
+                                                          AlignRight="IsNearRightEdge(col)"
+                                                          CanHide="VisibleColumnCount > 1"
+                                                          LoadValues="(search, ct) => LoadDistinctValuesAsync(col.EffectiveKey, search, ct)"
+                                                          OnApply="f => ApplyFilterAsync(col.EffectiveKey, f)"
+                                                          OnSort="desc => SortByAsync(col, desc)"
+                                                          OnHide="() => HideColumn(col)"
+                                                          OnCancel="CloseMenus" />
+                                    }
+                                </th>
+                            }
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @if (_totalCount < 0)
+                        {
+                            @for (var i = 0; i < 12; i++)
+                            {
+                                <tr class="sg-row sg-row-placeholder">
+                                    @foreach (var col in VisibleColumns)
+                                    {
+                                        <td class="sg-cell @(col.Frozen ? "sg-frozen" : "")"><span class="sg-skeleton"></span></td>
+                                    }
+                                </tr>
+                            }
+                        }
+                        else if (_totalCount == 0)
+                        {
+                            <tr class="sg-row">
+                                <td class="sg-empty" colspan="@VisibleColumnCount">
+                                    @(_loadError is not null ? "Could not load rows: " + _loadError : "No rows match the current filters.")
+                                </td>
+                            </tr>
+                        }
+                        else
+                        {
+                            <tr class="sg-spacer" aria-hidden="true" style="height:@Px(_topSpacer)"></tr>
+                            @foreach (var row in _rows)
+                            {
+                                <tr @key="RowKeyFor(row)" class="sg-row @(row.Index == _selectedRow ? "sg-row-selected" : "") @(row.Index % 2 == 1 ? "sg-row-alt" : "")">
+                                    @foreach (var col in VisibleColumns)
+                                    {
+                                        <td class="sg-cell sg-align-@col.EffectiveAlign.ToString().ToLowerInvariant() @(col.Frozen ? "sg-frozen" : "") @(IsSelected(row, col) ? "sg-cell-selected" : "") @col.CssClass"
+                                            @onclick="() => SelectCellAsync(row, col)">
+                                            @if (col.CellTemplate is not null)
+                                            {
+                                                @col.CellTemplate(row.Item)
+                                            }
+                                            else
+                                            {
+                                                @col.FormatCell(row.Item)
+                                            }
+                                        </td>
+                                    }
+                                </tr>
+                            }
+                            <tr class="sg-spacer" aria-hidden="true" style="height:@Px(_bottomSpacer)"></tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+
+            @if (ShowStatusBar)
+            {
+                <div class="sg-statusbar">
+                    <span>@StatusText</span>
+                    @if (_selectedRow >= 0)
+                    {
+                        <span class="sg-status-sep">·</span>
+                        <span>Row @((_selectedRow + 1).ToString("N0", CultureInfo.CurrentCulture))@(_selectedColumn is not null ? $", {Columns.FirstOrDefault(c => c.EffectiveKey == _selectedColumn)?.EffectiveTitle}" : "")</span>
+                    }
+                    <span class="sg-spacer"></span>
+                    <span class="sg-status-muted">Server-side · last fetch @_lastLoadMs ms</span>
+                </div>
+            }
+
+            @if (AnyMenuOpen)
+            {
+                <div class="sg-backdrop" @onclick="CloseMenus"></div>
+            }
+        </div>
+    </Defer>
+</CascadingValue>
